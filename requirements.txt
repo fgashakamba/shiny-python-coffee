@@ -13,3 +13,4 @@ shinywidgets
 ipyleaflet
 ipywidgets
 anywidget
+fiona 
