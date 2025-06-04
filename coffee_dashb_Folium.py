@@ -659,7 +659,7 @@ def server(input, output, session):
                 fillOpacity=0.6
             ).add_to(m)
 
-        # attach a click event handler which captures the coordinates of
+        # We are going to use a Jinja macro to attach a click event handler which captures the coordinates of
         # the click location and sends them to shiny to update the clicked_coords variable
         map_name = m.get_name()
         code = """
