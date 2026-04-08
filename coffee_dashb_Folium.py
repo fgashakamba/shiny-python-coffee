@@ -74,6 +74,38 @@ def load_geo_data(path):
     return country, lakes, parks, districts
 
 
+def add_map_click_bridge(map_obj, input_id, source):
+    # Attach a defensive click bridge that sends structured payloads to Shiny.
+    map_name = map_obj.get_name()
+    code = f"""
+    {{% macro script(this,kwargs) %}}
+    function getLatLng(e){{
+        var shiny = null;
+        if (window.parent && window.parent.Shiny) {{
+            shiny = window.parent.Shiny;
+        }} else if (window.Shiny) {{
+            shiny = window.Shiny;
+        }}
+
+        if (!shiny) {{
+            return;
+        }}
+
+        shiny.setInputValue('{input_id}', {{
+            source: '{source}',
+            lat: Number(e.latlng.lat.toFixed(6)),
+            lng: Number(e.latlng.lng.toFixed(6)),
+            nonce: Date.now()
+        }}, {{priority: 'event'}});
+    }}
+    {map_name}.on('click', getLatLng);
+    {{% endmacro %}}
+    """
+
+    el = folium.MacroElement().add_to(map_obj)
+    el._template = Template(code)
+
+
 # App UI
 app_ui = ui.page_fluid(   
     ui.tags.style(
@@ -464,29 +496,33 @@ def server(input, output, session):
         youth_in_hh = data_farmers['youth_in_hh'].dropna().astype(int).sum()
         return f"{youth_in_hh:,.0f}"
     
-    # Initialize reactive value for coordinates
-    clicked_coords = reactive.Value({'lat': None, 'lng': None})
+    # Track click payloads from each map independently so the bridge remains unambiguous.
+    cws_click = reactive.Value(None)
+    farms_click = reactive.Value(None)
 
-    # Update the clicked coordinates variable
     @reactive.Effect
-    @reactive.event(input.clicked_coords)
+    @reactive.event(input.cws_map_click)
     def _():
-        coords = input.clicked_coords()
-        if coords is not None:
-            clicked_coords.set({
-                'lat': float(coords[0]),
-                'lng': float(coords[1])
-            })
+        payload = input.cws_map_click()
+        if payload is not None:
+            cws_click.set(payload)
+
+    @reactive.Effect
+    @reactive.event(input.farms_map_click)
+    def _():
+        payload = input.farms_map_click()
+        if payload is not None:
+            farms_click.set(payload)
 
     # Calculate reactive variables used for interactivity
     #------------------------------------------------
     #1. get the clicked district
     @reactive.Calc
     def selected_district():
-        coords = clicked_coords.get()
-        if coords['lat'] is not None and coords['lng'] is not None:
+        click = farms_click.get()
+        if click is not None and click.get('lat') is not None and click.get('lng') is not None:
             point = gpd.GeoDataFrame(
-                [{"geometry": Point(coords['lng'], coords['lat'])}],
+                [{"geometry": Point(click['lng'], click['lat'])}],
                 crs="EPSG:4326"
             )
             current_district = gpd.sjoin(districts, point, how="inner", predicate="intersects")
@@ -505,9 +541,9 @@ def server(input, output, session):
     #3. Get the nearest CWS to the clicked spot on the CWS map
     @reactive.Calc
     def selected_cws():
-        clicked_spot = clicked_coords.get()
-        if clicked_spot['lat'] is not None and clicked_spot['lng'] is not None:
-            point_coords = (clicked_spot['lat'], clicked_spot['lng'])
+        click = cws_click.get()
+        if click is not None and click.get('lat') is not None and click.get('lng') is not None:
+            point_coords = (click['lat'], click['lng'])
             
             # Calculate distances from clicked point to all CWS locations
             distances = data_cws.geometry.apply(
@@ -529,7 +565,8 @@ def server(input, output, session):
     @reactive.Effect
     def _():
         input.map_tabs()
-        clicked_coords.set({'lat': None, 'lng': None}) 
+        cws_click.set(None)
+        farms_click.set(None)
   
     @output
     @render.ui
@@ -651,27 +688,17 @@ def server(input, output, session):
         # hightlght currently selected CWSs
         cur_cws = selected_cws()
         if cur_cws is not None and not cur_cws.empty:
+            selected_cws_row = cur_cws.iloc[0]
             folium.CircleMarker(
-                location=[cur_cws.geometry.y, cur_cws.geometry.x],
+                location=[selected_cws_row.geometry.y, selected_cws_row.geometry.x],
                 radius=3,
                 color='yellow',
                 fill=True,
                 fillOpacity=0.6
             ).add_to(m)
 
-        # We are going to use a Jinja macro to attach a click event handler which captures the coordinates of
-        # the click location and sends them to shiny to update the clicked_coords variable
-        map_name = m.get_name()
-        code = """
-        {% macro script(this,kwargs) %}
-        function getLatLng(e){
-            var lat = e.latlng.lat.toFixed(6),
-                lng = e.latlng.lng.toFixed(6);
-            parent.Shiny.setInputValue('clicked_coords', [lat, lng], {priority: 'event'});
-        }; """ +  map_name + ".on('click', getLatLng){% endmacro %}"
-        
-        el = folium.MacroElement().add_to(m)
-        el._template = Template(code)
+        # Attach the click bridge for nearest-CWS selection.
+        add_map_click_bridge(m, "cws_map_click", "cws")
         
         # Add layer control
         folium.LayerControl().add_to(m)
@@ -779,19 +806,8 @@ def server(input, output, session):
                     fillOpacity=0.6
                 ).add_to(m)
 
-        # attach a click event handler which captures the coordinates of the click location
-        #  and sends them to shiny to update the clicked_coords variable
-        map_name = m.get_name()
-        code = """
-        {% macro script(this,kwargs) %}
-        function getLatLng(e){
-            var lat = e.latlng.lat.toFixed(6),
-                lng = e.latlng.lng.toFixed(6);
-            parent.Shiny.setInputValue('clicked_coords', [lat, lng], {priority: 'event'});
-        }; """ +  map_name + ".on('click', getLatLng){% endmacro %}"
-        
-        el = folium.MacroElement().add_to(m)
-        el._template = Template(code)
+        # Attach the click bridge for district selection.
+        add_map_click_bridge(m, "farms_map_click", "farms")
         
         # Add layer control
         folium.LayerControl().add_to(m)

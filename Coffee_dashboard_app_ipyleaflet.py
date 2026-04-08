@@ -1,8 +1,8 @@
 from shiny import App, render, ui, reactive
 from shinywidgets import output_widget, render_widget
+from ipywidgets import HTML
 from ipyleaflet import Map, Marker, CircleMarker, MarkerCluster, GeoJSON, GeoData
 from ipyleaflet import LayersControl, ScaleControl, Popup
-from ipywidgets import HTML
 import geopandas as gpd
 import pandas as pd
 import shinyswatch
